@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, Cookie, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -173,6 +173,9 @@ async def put_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             updates[key] = str(payload[key]).strip()
     if updates.get("endpoint") and updates["endpoint"] not in ENDPOINTS:
         raise HTTPException(status_code=400, detail="未知的区域接口")
+    if updates.get("endpoint") and not payload.get("subsidiary"):
+        # 换区域但没给子区域时，落到该区域默认值，避免用错结算站点
+        updates["subsidiary"] = ENDPOINTS[updates["endpoint"]]["subsidiary"]
     for key in ("application_key", "application_secret", "consumer_key", "telegram_bot_token"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():

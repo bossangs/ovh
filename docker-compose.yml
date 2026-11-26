@@ -1,0 +1,21 @@
+services:
+  ovh-panel:
+    build: .
+    image: ovh-panel:latest
+    container_name: ovh-panel
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # 配置与日志都留在这里，容器重建不丢
+      - ./data:/app/data
+    environment:
+      OVH_ENDPOINT: ${OVH_ENDPOINT:-ovh-ca}
+      OVH_SUBSIDIARY: ${OVH_SUBSIDIARY:-CA}
+      OVH_APPLICATION_KEY: ${OVH_APPLICATION_KEY:-}
+      OVH_APPLICATION_SECRET: ${OVH_APPLICATION_SECRET:-}
+      OVH_CONSUMER_KEY: ${OVH_CONSUMER_KEY:-}
+      PANEL_PASSWORD: ${PANEL_PASSWORD:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TZ: Asia/Shanghai

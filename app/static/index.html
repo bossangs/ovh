@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OVH 中文面板 · Kimsufi / Eco 监控与机器管理</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- 登录遮罩 -->
+<div id="login-overlay" class="overlay hidden">
+  <form class="login-card" id="login-form">
+    <h2>OVH 中文面板</h2>
+    <p class="muted">该面板已设置访问密码</p>
+    <input type="password" id="login-password" placeholder="请输入面板密码" autocomplete="current-password">
+    <button class="btn primary" type="submit">进入面板</button>
+    <p class="muted small" id="login-error"></p>
+  </form>
+</div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">OVH</span>
+    <span class="brand-text">中文面板<em>Kimsufi · Eco 监控 / 下单 / 机器管理</em></span>
+  </div>
+  <div class="topbar-right">
+    <span class="pill" id="pill-region">区域：—</span>
+    <span class="pill" id="pill-account">密钥：未配置</span>
+    <button class="btn ghost small" id="btn-logout" hidden>退出</button>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="stock">库存监控</button>
+  <button class="tab" data-tab="rules">监控规则</button>
+  <button class="tab" data-tab="orders">下单与订单</button>
+  <button class="tab" data-tab="machines">我的机器</button>
+  <button class="tab" data-tab="settings">系统设置</button>
+  <button class="tab" data-tab="logs">运行日志</button>
+</nav>
+
+<main>
+  <!-- ============ 库存 ============ -->
+  <section class="panel active" id="tab-stock">
+    <div class="toolbar">
+      <input type="search" id="f-q" placeholder="搜索机型 / CPU，例如 KS-LE、E5-1620">
+      <input type="number" id="f-price" placeholder="最高月价" min="0" step="1">
+      <select id="f-tier">
+        <option value="">全部档位</option>
+        <option value="KS">Kimsufi（KS）</option>
+        <option value="SYS">SYS</option>
+        <option value="RISE-LE">RISE-LE</option>
+        <option value="RISE">RISE</option>
+        <option value="ADVANCE">ADVANCE</option>
+      </select>
+      <label class="check"><input type="checkbox" id="f-ks" checked> 只要 KS / Eco</label>
+      <label class="check"><input type="checkbox" id="f-stock"> 只看有货</label>
+      <button class="btn primary" id="btn-refresh">刷新库存</button>
+      <span class="muted small" id="stock-updated"></span>
+    </div>
+    <div class="stock-summary" id="stock-summary"></div>
+    <div class="grid" id="stock-list"></div>
+  </section>
+
+  <!-- ============ 规则 ============ -->
+  <section class="panel" id="tab-rules">
+    <div class="card form-card">
+      <h3>新增监控规则</h3>
+      <div class="form-grid">
+        <label>机型代码
+          <input id="r-plan" list="plan-codes" placeholder="27skle01-v1">
+          <datalist id="plan-codes"></datalist>
+        </label>
+        <label>备注名称
+          <input id="r-name" placeholder="例如 KS-LE-1 捡漏">
+        </label>
+        <label>机房（留空=全部机房）
+          <input id="r-dcs" placeholder="bhs,gra,rbx">
+        </label>
+        <label>触发条件
+          <select id="r-state">
+            <option value="1H-low">现货即可（1 小时内交付）</option>
+            <option value="1H-high">只要现货充足</option>
+            <option value="72H">72 小时内有货即可</option>
+          </select>
+        </label>
+        <label>轮询间隔（秒）
+          <input type="number" id="r-interval" value="180" min="30" step="30">
+        </label>
+        <label class="check inline"><input type="checkbox" id="r-auto"> 有货自动下单</label>
+        <label class="check inline"><input type="checkbox" id="r-autopay"> 下单后自动支付</label>
+        <label>租期（月）
+          <input type="number" id="r-months" value="1" min="1" max="12">
+        </label>
+      </div>
+      <button class="btn primary" id="btn-add-rule">添加规则</button>
+      <p class="muted small">提示：监控走公开库存接口，不需要 API 密钥；自动下单需要先配置好 API 三件套与付款方式。</p>
+    </div>
+    <div class="grid" id="rules-list"></div>
+  </section>
+
+  <!-- ============ 订单 ============ -->
+  <section class="panel" id="tab-orders">
+    <div class="toolbar">
+      <button class="btn" id="btn-load-orders">刷新我的订单</button>
+      <span class="muted small">下单后可在 OVH 控制台用付款链接完成支付；开启「自动支付」则用账号默认付款方式直接扣款。</span>
+    </div>
+    <div class="grid" id="orders-list"></div>
+  </section>
+
+  <!-- ============ 机器 ============ -->
+  <section class="panel" id="tab-machines">
+    <div class="toolbar">
+      <button class="btn" id="btn-load-servers">读取我的独立服务器</button>
+      <span class="muted small">重启 / 救援模式 / 重装系统都直接调用 OVH API，执行后可在「任务」里看进度。</span>
+    </div>
+    <div class="grid" id="servers-list"></div>
+  </section>
+
+  <!-- ============ 设置 ============ -->
+  <section class="panel" id="tab-settings">
+    <div class="card form-card">
+      <h3>OVH API 与区域</h3>
+      <p class="muted small">没有密钥时库存监控依然可用（公开接口）；下单与机器管理需要密钥。生成地址：
+        <a href="https://ca.api.ovh.com/createToken/" target="_blank" rel="noopener">ca.api.ovh.com/createToken</a>
+        / <a href="https://eu.api.ovh.com/createToken/" target="_blank" rel="noopener">eu.api.ovh.com/createToken</a>
+        / <a href="https://api.us.ovhcloud.com/createToken/" target="_blank" rel="noopener">api.us.ovhcloud.com/createToken</a>
+      </p>
+      <div class="form-grid">
+        <label>区域接口
+          <select id="s-endpoint"></select>
+        </label>
+        <label>ovhSubsidiary
+          <select id="s-subsidiary"></select>
+        </label>
+        <label>Application Key
+          <input id="s-ak" placeholder="留空表示不修改">
+        </label>
+        <label>Application Secret
+          <input id="s-as" type="password" placeholder="留空表示不修改">
+        </label>
+        <label>Consumer Key
+          <input id="s-ck" type="password" placeholder="留空表示不修改">
+        </label>
+        <label>面板访问密码（留空=不修改）
+          <input id="s-password" type="password" placeholder="设置后打开面板需输入">
+        </label>
+        <label>Telegram Bot Token
+          <input id="s-tg-token" placeholder="123456:ABC-...">
+        </label>
+        <label>Telegram Chat ID
+          <input id="s-tg-chat" placeholder="例如 123456789">
+        </label>
+        <label>默认轮询间隔（秒）
+          <input id="s-interval" type="number" min="30" step="30">
+        </label>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="btn-save-settings">保存设置</button>
+        <button class="btn" id="btn-test-tg">发送 Telegram 测试</button>
+        <button class="btn" id="btn-check-account">验证账号</button>
+        <span class="muted small" id="settings-state"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 日志 ============ -->
+  <section class="panel" id="tab-logs">
+    <div class="toolbar">
+      <button class="btn" id="btn-logs">刷新日志</button>
+    </div>
+    <div class="log-list" id="logs-list"></div>
+  </section>
+</main>
+
+<!-- 通用弹窗 -->
+<div class="overlay hidden" id="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="modal-title">标题</h3>
+      <button class="btn ghost small" id="modal-close">关闭</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

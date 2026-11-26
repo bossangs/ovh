@@ -38,8 +38,12 @@ def _duration(months: int) -> str:
 
 
 async def fetch_orders(client: OvhClient, limit: int = 15) -> list[dict[str, Any]]:
-    """最近订单。先拿 id 列表（/me/order 默认按时间升序），取尾部再逐个补详情。"""
-    ids = await client.get("/me/order", params={"sort": "DESC"})
+    """最近订单。先拿 id 列表，再逐个补详情。"""
+    try:
+        ids = await client.get("/me/order", params={"sort": "DESC"})
+    except OvhApiError:
+        # 部分区域不支持 sort 参数，退回默认顺序
+        ids = await client.get("/me/order")
     if not isinstance(ids, list):
         return []
     result: list[dict[str, Any]] = []

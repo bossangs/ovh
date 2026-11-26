@@ -14,7 +14,7 @@ const state = {
 
 /* ------------------------------------------------------------------ 工具 */
 function esc(value) {
-  return String(value ?? "")
+  return String(value === null || value === undefined ? "" : value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -359,7 +359,7 @@ function renderOrderResult(data) {
     ? `<p>付款链接：<a href="${esc(data.order_url)}" target="_blank" rel="noopener">${esc(data.order_url)}</a></p>`
     : "";
   const head = data.ok
-    ? `<p style="color:var(--ok)"><b>${data.preview_only ? "结算预览完成" : `订单已生成：${esc(data.order_id ?? "")}`}</b></p>`
+    ? `<p style="color:var(--ok)"><b>${data.preview_only ? "结算预览完成" : `订单已生成：${esc(data.order_id === undefined ? "" : data.order_id)}`}</b></p>`
     : `<p style="color:var(--bad)"><b>失败：${esc(data.error || "未知错误")}</b></p>`;
   return `
     <div class="card" style="margin-top:12px">
@@ -619,7 +619,7 @@ $("#servers-list").addEventListener("click", async (event) => {
     if (act === "reboot") {
       if (!confirm(`确定重启 ${name}？`)) return;
       const data = await api(`/api/servers/${name}/reboot`, { method: "POST", body: {} });
-      toast(`重启指令已发送（任务 ${data.task?.taskId ?? ""}）`, "ok");
+      toast(`重启指令已发送（任务 ${data.task && data.task.taskId ? data.task.taskId : ""}）`, "ok");
     }
     if (act === "detail") {
       const data = await api(`/api/servers/${name}`);
@@ -629,12 +629,12 @@ $("#servers-list").addEventListener("click", async (event) => {
         <div class="specs">
           <span><b>型号</b>${esc(hw.description || "—")}</span>
           <span><b>处理器</b>${esc(hw.processor || "—")}</span>
-          <span><b>内存</b>${esc(hw.memorySize?.description || hw.memorySize?.size || "—")}</span>
+          <span><b>内存</b>${esc((hw.memorySize && (hw.memorySize.description || hw.memorySize.size)) || "—")}</span>
           <span><b>IP</b>${esc(ips || "—")}</span>
-          <span><b>机房</b>${esc(data.detail?.datacenter || "—")}</span>
-          <span><b>到期</b>${esc(data.serviceInfos?.expiration || "—")}</span>
-          <span><b>续费方式</b>${esc(data.serviceInfos?.renewalType || "—")}</span>
-          <span><b>启动项 ID</b>${esc(data.detail?.bootId ?? "—")}</span>
+          <span><b>机房</b>${esc((data.detail && data.detail.datacenter) || "—")}</span>
+          <span><b>到期</b>${esc((data.serviceInfos && data.serviceInfos.expiration) || "—")}</span>
+          <span><b>续费方式</b>${esc((data.serviceInfos && data.serviceInfos.renewalType) || "—")}</span>
+          <span><b>启动项 ID</b>${esc(data.detail && data.detail.bootId !== undefined ? data.detail.bootId : "—")}</span>
         </div>
         <pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">${esc(JSON.stringify(hw, null, 1)).slice(0, 4000)}</pre>`);
     }

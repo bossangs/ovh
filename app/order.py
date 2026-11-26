@@ -4,7 +4,8 @@ OVH 的顺序（公开文档 /order/cart）：
   POST /order/cart                              创建购物车
   POST /order/cart/{cartId}/assign              绑定到当前账号
   POST /order/cart/{cartId}/eco                 添加独立服务器（planCode/duration/pricingMode）
-  POST /order/cart/{cartId}/item/{itemId}/configuration   选机房、系统
+  GET  /order/cart/{cartId}/item/{itemId}/requiredConfiguration  该 item 的必填配置
+  POST /order/cart/{cartId}/item/{itemId}/configuration   选机房、系统（每次只收一条 label/value）
   GET  /order/cart/{cartId}/checkout            取合同与金额
   POST /order/cart/{cartId}/checkout            生成订单（可选自动扣款）
 """
@@ -35,6 +36,73 @@ def resolve_region(plan: dict[str, Any], datacenter: str) -> str | None:
 
 def _duration(months: int) -> str:
     return f"P{int(months)}M"
+
+
+async def _required_labels(client: OvhClient, cart_id: str, item_id: Any) -> list[str]:
+    """该 item 的必填配置 label。接口拿不到时返回空表，不阻塞下单。"""
+    try:
+        data = await client.get(
+            f"/order/cart/{cart_id}/item/{item_id}/requiredConfiguration"
+        )
+    except OvhApiError:
+        return []
+    labels: list[str] = []
+    for cfg in data or []:
+        if not isinstance(cfg, dict) or not cfg.get("label"):
+            continue
+        if cfg.get("required") or cfg.get("isMandatory"):
+            labels.append(str(cfg["label"]))
+    return labels
+
+
+async def _apply_configuration(
+    client: OvhClient,
+    cart_id: str,
+    item_id: Any,
+    configuration: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], list[str]]:
+    """逐条提交配置，返回（已生效, 失败说明）。
+
+    POST /order/cart/{cartId}/item/{itemId}/configuration 的 body 只接受单个
+    {"label": ..., "value": ...} 对象，一次传数组会直接 400 Bad Request。
+    某一条被拒（例如机型不支持 region）时记下来继续下一条，交由结算阶段判断。
+    """
+    applied: list[dict[str, str]] = []
+    failures: list[str] = []
+    for cfg in configuration:
+        label = str(cfg.get("label") or "")
+        value = str(cfg.get("value") or "")
+        if not label:
+            continue
+        try:
+            await client.post(
+                f"/order/cart/{cart_id}/item/{item_id}/configuration",
+                {"label": label, "value": value},
+            )
+        except OvhApiError as exc:
+            failures.append(f"{label}={value}（{exc.message}）")
+            continue
+        applied.append({"label": label, "value": value})
+    return applied, failures
+
+
+def _config_hint(
+    exc: OvhApiError, missing: list[str], failures: list[str]
+) -> OvhApiError:
+    """结算接口缺配置时只回一句 400，这里补上到底缺哪一项。"""
+    hints: list[str] = []
+    if missing:
+        hints.append("缺少必填配置：" + "、".join(missing))
+    if failures:
+        hints.append("未生效的配置：" + "；".join(failures))
+    if not hints:
+        return exc
+    return OvhApiError(
+        exc.status,
+        f"{exc.message}（{'；'.join(hints)}），请检查所选机房与系统是否被该机型支持",
+        exc.api_class,
+        exc.path,
+    )
 
 
 async def fetch_orders(client: OvhClient, limit: int = 15) -> list[dict[str, Any]]:
@@ -77,13 +145,16 @@ async def create_order(
     plan_code = plan["planCode"]
     cart_id: str | None = None
     steps: list[str] = []
+    applied: list[dict[str, str]] = []
+    failures: list[str] = []
+    missing: list[str] = []
 
     try:
         cart = await client.post(
             "/order/cart",
             {"ovhSubsidiary": subsidiary, "description": f"ovh-panel {plan_code}"},
         )
-        cart_id = str(cart.get("cartId") or cart.get("cartId", ""))
+        cart_id = str((cart or {}).get("cartId") or "") if isinstance(cart, dict) else ""
         if not cart_id:
             raise OvhApiError(500, f"创建购物车返回异常：{cart}", "CartError")
         steps.append(f"已创建购物车 {cart_id}")
@@ -91,15 +162,22 @@ async def create_order(
         await client.post(f"/order/cart/{cart_id}/assign")
         steps.append("购物车已绑定当前账号")
 
-        item = await client.post(
-            f"/order/cart/{cart_id}/eco",
-            {
-                "planCode": plan_code,
-                "duration": _duration(months),
-                "pricingMode": "default",
-                "quantity": 1,
-            },
-        )
+        try:
+            item = await client.post(
+                f"/order/cart/{cart_id}/eco",
+                {
+                    "planCode": plan_code,
+                    "duration": _duration(months),
+                    "pricingMode": "default",
+                    "quantity": 1,
+                },
+            )
+        except OvhApiError as exc:
+            message = exc.message
+            low = message.lower()
+            if "pricing" in low or "price" in low or "duration" in low:
+                message = f"{message}（该机型在 {months} 个月租期下可能没有 default 定价，请换租期再试）"
+            raise OvhApiError(exc.status, message, exc.api_class, exc.path) from exc
         item_id = item.get("itemId") if isinstance(item, dict) else None
         if item_id is None:
             raise OvhApiError(500, f"添加商品返回异常：{item}", "CartItemError")
@@ -116,16 +194,27 @@ async def create_order(
         chosen_os = os_template or ("none_64.en" if "none_64.en" in os_choices else (os_choices[0] if os_choices else ""))
         if chosen_os:
             configuration.append({"label": "dedicated_os", "value": chosen_os})
-        if configuration:
-            await client.post(
-                f"/order/cart/{cart_id}/item/{item_id}/configuration", configuration
-            )
+
+        required = await _required_labels(client, cart_id, item_id)
+        applied, failures = await _apply_configuration(
+            client, cart_id, item_id, configuration
+        )
+        if applied:
             steps.append(
-                "已设置 " + "、".join(f"{c['label']}={c['value']}" for c in configuration)
+                "已设置 " + "、".join(f"{c['label']}={c['value']}" for c in applied)
             )
+        if failures:
+            steps.append("部分配置未生效：" + "；".join(failures))
+        applied_labels = {c["label"] for c in applied}
+        missing = [label for label in required if label not in applied_labels]
+        if missing:
+            steps.append("仍缺必填配置：" + "、".join(missing))
 
         cart_full = await client.get(f"/order/cart/{cart_id}")
-        checkout = await client.get(f"/order/cart/{cart_id}/checkout")
+        try:
+            checkout = await client.get(f"/order/cart/{cart_id}/checkout")
+        except OvhApiError as exc:
+            raise _config_hint(exc, missing, failures) from exc
         steps.append("已获取结算信息")
 
         result: dict[str, Any] = {
@@ -137,6 +226,8 @@ async def create_order(
             "datacenter": datacenter,
             "months": months,
             "os": chosen_os,
+            "configuration": applied,
+            "missing_config": missing,
             "steps": steps,
             "prices": (checkout or {}).get("prices") or (cart_full or {}).get("prices"),
             "contracts": len((checkout or {}).get("contracts") or []),
@@ -146,13 +237,16 @@ async def create_order(
             log(f"下单预览完成：{plan_code} @ {datacenter}，购物车 {cart_id}", "info", plan=plan_code)
             return result
 
-        order = await client.post(
-            f"/order/cart/{cart_id}/checkout",
-            {
-                "autoPayWithPreferredPaymentMethod": bool(auto_pay),
-                "waiveRetractationPeriod": False,
-            },
-        )
+        try:
+            order = await client.post(
+                f"/order/cart/{cart_id}/checkout",
+                {
+                    "autoPayWithPreferredPaymentMethod": bool(auto_pay),
+                    "waiveRetractationPeriod": False,
+                },
+            )
+        except OvhApiError as exc:
+            raise _config_hint(exc, missing, failures) from exc
         order_id = (order or {}).get("orderId")
         result.update(
             {
@@ -188,6 +282,8 @@ async def create_order(
             "error": exc.message,
             "status": exc.status,
             "class": exc.api_class,
+            "configuration": applied,
+            "missing_config": missing,
             "steps": steps,
             "cart_id": cart_id,
         }
